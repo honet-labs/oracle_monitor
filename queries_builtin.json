@@ -1,0 +1,202 @@
+[
+  {
+    "name": "Server:Version",
+    "sql": "SELECT banner FROM v$version WHERE ROWNUM=1",
+    "datatype": "generic_data_string",
+    "group": "Basic Info",
+    "flag": "basic_info",
+    "builtin": true,
+    "unit": "",
+    "result": "auto"
+  },
+  {
+    "name": "Database:Name",
+    "sql": "SELECT SYS_CONTEXT('USERENV','DB_NAME') FROM dual",
+    "datatype": "generic_data_string",
+    "group": "Basic Info",
+    "flag": "basic_info",
+    "builtin": true,
+    "unit": "",
+    "result": "auto"
+  },
+  {
+    "name": "Database:Service",
+    "sql": "SELECT SYS_CONTEXT('USERENV','SERVICE_NAME') FROM dual",
+    "datatype": "generic_data_string",
+    "group": "Basic Info",
+    "flag": "basic_info",
+    "builtin": true,
+    "unit": "",
+    "result": "auto"
+  },
+  {
+    "name": "Database:Instance",
+    "sql": "SELECT SYS_CONTEXT('USERENV','INSTANCE_NAME') FROM dual",
+    "datatype": "generic_data_string",
+    "group": "Basic Info",
+    "flag": "basic_info",
+    "builtin": true,
+    "unit": "",
+    "result": "auto"
+  },
+  {
+    "name": "Database:CurrentUser",
+    "sql": "SELECT USER FROM dual",
+    "datatype": "generic_data_string",
+    "group": "Basic Info",
+    "flag": "basic_info",
+    "builtin": true,
+    "unit": "",
+    "result": "auto"
+  },
+  {
+    "name": "Database:InstanceUptimeDays",
+    "sql": "SELECT ROUND(SYSDATE - startup_time,2) FROM v$instance",
+    "datatype": "generic_data",
+    "group": "Basic Info",
+    "flag": "basic_info",
+    "builtin": true,
+    "unit": "days",
+    "result": "auto"
+  },
+  {
+    "name": "Sessions:Total",
+    "sql": "SELECT COUNT(*) FROM v$session",
+    "datatype": "generic_data",
+    "group": "Sessions",
+    "flag": "connections",
+    "builtin": true,
+    "unit": "",
+    "result": "auto"
+  },
+  {
+    "name": "Sessions:Active",
+    "sql": "SELECT COUNT(*) FROM v$session WHERE status='ACTIVE' AND type='USER'",
+    "datatype": "generic_data",
+    "group": "Sessions",
+    "flag": "connections",
+    "builtin": true,
+    "unit": "",
+    "result": "auto"
+  },
+  {
+    "name": "Sessions:Inactive",
+    "sql": "SELECT COUNT(*) FROM v$session WHERE status='INACTIVE' AND type='USER'",
+    "datatype": "generic_data",
+    "group": "Sessions",
+    "flag": "connections",
+    "builtin": true,
+    "unit": "",
+    "result": "auto"
+  },
+  {
+    "name": "Sessions:Blocked",
+    "sql": "SELECT COUNT(*) FROM v$session WHERE blocking_session IS NOT NULL",
+    "datatype": "generic_data",
+    "group": "Sessions",
+    "flag": "connections",
+    "builtin": true,
+    "unit": "",
+    "result": "auto"
+  },
+  {
+    "name": "Sessions:List",
+    "sql": "SELECT sid, serial#, username, machine, program, status, event FROM v$session WHERE type='USER' ORDER BY logon_time DESC FETCH FIRST 30 ROWS ONLY",
+    "datatype": "generic_data_string",
+    "group": "Sessions",
+    "flag": "connections",
+    "builtin": true,
+    "unit": "",
+    "result": "auto"
+  },
+  {
+    "name": "Performance:PhysicalReads",
+    "sql": "SELECT value FROM v$sysstat WHERE name='physical reads'",
+    "datatype": "generic_data",
+    "group": "Performance",
+    "flag": "performance",
+    "builtin": true,
+    "unit": "",
+    "result": "auto"
+  },
+  {
+    "name": "Performance:LogicalReads",
+    "sql": "SELECT value FROM v$sysstat WHERE name='session logical reads'",
+    "datatype": "generic_data",
+    "group": "Performance",
+    "flag": "performance",
+    "builtin": true,
+    "unit": "",
+    "result": "auto"
+  },
+  {
+    "name": "Performance:UserCommits",
+    "sql": "SELECT value FROM v$sysstat WHERE name='user commits'",
+    "datatype": "generic_data",
+    "group": "Performance",
+    "flag": "performance",
+    "builtin": true,
+    "unit": "",
+    "result": "auto"
+  },
+  {
+    "name": "Performance:UserRollbacks",
+    "sql": "SELECT value FROM v$sysstat WHERE name='user rollbacks'",
+    "datatype": "generic_data",
+    "group": "Performance",
+    "flag": "performance",
+    "builtin": true,
+    "unit": "",
+    "result": "auto"
+  },
+  {
+    "name": "Storage:OwnedTables",
+    "sql": "SELECT COUNT(*) FROM user_tables",
+    "datatype": "generic_data",
+    "group": "Storage",
+    "flag": "storage",
+    "builtin": true,
+    "unit": "",
+    "result": "auto"
+  },
+  {
+    "name": "Storage:OwnedSegmentsMB",
+    "sql": "SELECT NVL(ROUND(SUM(bytes)/1024/1024,2),0) FROM user_segments",
+    "datatype": "generic_data",
+    "group": "Storage",
+    "flag": "storage",
+    "builtin": true,
+    "unit": "MB",
+    "result": "auto"
+  },
+  {
+    "name": "Storage:TopTables",
+    "sql": "SELECT segment_name, ROUND(bytes/1024/1024,2) AS size_mb FROM user_segments WHERE segment_type LIKE 'TABLE%' ORDER BY bytes DESC FETCH FIRST 20 ROWS ONLY",
+    "datatype": "generic_data_string",
+    "group": "Storage",
+    "flag": "storage",
+    "builtin": true,
+    "unit": "",
+    "result": "auto"
+  },
+  {
+    "name": "Security:AccessibleRoles",
+    "sql": "SELECT COUNT(*) FROM session_roles",
+    "datatype": "generic_data",
+    "group": "Security",
+    "flag": "security",
+    "builtin": true,
+    "unit": "",
+    "result": "auto"
+  },
+  {
+    "name": "Security:GrantedRoles",
+    "sql": "SELECT granted_role FROM user_role_privs ORDER BY granted_role",
+    "datatype": "generic_data_string",
+    "group": "Security",
+    "flag": "security",
+    "builtin": true,
+    "unit": "",
+    "result": "auto"
+  }
+]
