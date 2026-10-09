@@ -1,5 +1,29 @@
 """Oracle Database via python-oracledb Thin (requires Oracle 12.1+)."""
 OS_NAME='Oracle'
+VERSION_SQL="SELECT banner FROM v$version WHERE banner LIKE 'Oracle%' AND ROWNUM = 1"
+
+def format_product_identity(server_version, banner):
+    import re
+    version=str(server_version or '').strip()
+    banner=' '.join(str(banner or '').split())
+    if banner:
+        banner=re.sub(r'\s+-\s+Production\b.*$','',banner, flags=re.I).strip()
+        # Existing Oracle banner includes database edition and release if available.
+        return banner[:128]
+    return (('Oracle Database '+version).strip() if version else '')[:128]
+
+def get_version_info(conn,cursor):
+    version=str(getattr(conn,'version','') or '').strip()
+    try:
+        cursor.execute(VERSION_SQL)
+        row=cursor.fetchone()
+        banner=row[0] if row else ''
+    except Exception:
+        # V$VERSION privilege is not required for core database monitoring.
+        # Retain the verified server version when the banner is not readable.
+        banner=''
+    return format_product_identity(version,banner)
+
 
 def connect(cfg):
     try:import oracledb

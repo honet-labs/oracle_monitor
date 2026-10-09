@@ -13,7 +13,7 @@ import sys
 import time
 from pathlib import Path
 
-VERSION = '1.0.1'
+VERSION = "1.0.5"
 STRING_TYPES = {'generic_data_string', 'async_string'}
 NUMERIC_TYPES = {'generic_data', 'async_data', 'generic_proc', 'async_proc'}
 ALLOWED_TYPES = STRING_TYPES | NUMERIC_TYPES
@@ -80,6 +80,45 @@ def mask_error(exc, cfg):
         if secret and len(secret)>=3: msg=msg.replace(secret,'[REDACTED]')
     return msg[:900]
 
+
+def error_advice(message, cfg, engine='MySQL'):
+    """Actionable English troubleshooting guidance for Discovery Task Summary.
+
+    Never include credentials or connection-string secrets here.
+    """
+    msg = str(message).lower()
+    host = cfg.get('host', '').strip()
+    dbname = cfg.get('database', '').strip()
+    if 'certificate key too weak' in msg or 'ee certificate key too weak' in msg or 'ca md too weak' in msg:
+        return ('SQL Server TLS certificate uses a weak key or signature. Replace it with a trusted, modern server certificate '
+                '(for example RSA 2048+ bits with SHA-256). For isolated troubleshooting only, enable '
+                '"Trust server certificate (test only)" while keeping "Encrypt connection" enabled; '
+                'this bypasses certificate verification but might not resolve every TLS handshake failure.')
+    if 'dh key too small' in msg or 'no suitable signature algorithm' in msg:
+        return ('TLS negotiation rejected weak cryptographic parameters. Upgrade the SQL Server TLS certificate/configuration; '
+                'do not lower the Pandora server-wide OpenSSL security policy.')
+    if 'odbc driver not installed' in msg:
+        return ('Choose an installed SQL Server ODBC driver in the Discovery Task or install Microsoft ODBC Driver 17/18. '
+                'Inspect installed drivers using: odbcinst -q -d.')
+    if any(s in msg for s in ('name or service not known', 'name resolution', 'nodename nor servname', 'getaddrinfo')):
+        if host.lower() == dbname.lower() and host:
+            return f'The Host/IP value is identical to the database name. Enter the {engine} server hostname or IP address, not the database name.'
+        return 'Check the database Host/IP field and DNS resolution from the Pandora Discovery server.'
+    if any(s in msg for s in ('certificate verify failed','certificate chain','self-signed certificate','ssl provider','unknown ca')):
+        if engine == 'MSSQL':
+            return ('Check the SQL Server TLS certificate, issuing CA, hostname and key strength. '
+                    'For temporary testing only, enable "Trust server certificate (test only)". '
+                    'For production, install a trusted server certificate with strong cryptography.')
+        return 'Verify TLS settings, the trusted CA certificate and the hostname on the server certificate.'
+    if any(s in msg for s in ('access denied','authentication failed','login failed','ora-01017')):
+        return f'Check the {engine} monitoring username/password, database permissions and applicable authentication settings.'
+    if 'connection refused' in msg or 'errno 111' in msg:
+        return f'Check the {engine} service status, TCP port, bind/listen configuration and target firewall.'
+    if 'timed out' in msg or 'timeout' in msg:
+        return 'Check network routing, firewall rules, target TCP port and connection timeout.'
+    if 'permission denied' in msg or 'insufficient privileges' in msg:
+        return f'Grant the necessary read-only monitoring permissions to the {engine} monitoring account.'
+    return 'Review the full error and collector log on the Pandora Discovery server.'
 
 def sql_is_safe_readonly(sql, allow_show=False):
     """Defense in depth. Real authorization MUST use a read-only DB account."""
@@ -157,11 +196,24 @@ def xml_module(name,value,datatype='generic_data',unit='',group='',description='
     return '\n'.join(chunks)
 
 
-def xml_agent(engine, cfg, agent, modules):
+def xml_agent(engine, cfg, agent, modules, database_version=''):
+    """Report the database engine version in the Pandora agent inventory.
+
+    Pandora XML uses `os_version` for the Version inventory column and
+    `version` for the software agent version.  Both refer to the monitored
+    database, not the Disco collector release.  When the database is down,
+    omit both so an existing agent's previous version is not overwritten.
+    """
     timestamp=datetime.datetime.now().strftime('%Y/%m/%d %H:%M:%S')
     group=cfg.get('group','Databases') or 'Databases'
     address=cfg.get('host','')
-    return f'<agent_data agent_name="{escape(agent)}" timestamp="{timestamp}" group="{escape(group)}" os_name="{escape(engine.OS_NAME)}" alias="{escape(agent)}" address="{escape(address)}" agent_version="dbdisco.{VERSION}">\n'+'\n'.join(modules)+'\n</agent_data>\n'
+    attrs=(f'agent_name="{escape(agent)}" timestamp="{timestamp}" '
+           f'group="{escape(group)}" os_name="{escape(engine.OS_NAME)}" '
+           f'alias="{escape(agent)}" address="{escape(address)}"')
+    version=str(database_version or '').strip()[:128]
+    if version:
+        attrs+=f' os_version="{escape(version)}" version="{escape(version)}"'
+    return '<agent_data '+attrs+'>\n'+'\n'.join(modules)+'\n</agent_data>\n'
 
 
 def parse_custom(cfg, paths):
@@ -210,6 +262,9 @@ def execute(engine_name):
     modules=[]
     started=time.monotonic()
     counts={'success':0,'error':0,'queries':0,'connections':0}
+    errors=[]
+    database_version=''
+    fatal_error=False
     lock=None
     conn=None
     if not host or not user:
@@ -227,6 +282,18 @@ def execute(engine_name):
         cursor=conn.cursor()
         try:
             adapter.init_session(conn,cursor,cfg)
+            # Version lookup reuses the SAME DB session and cursor.
+            try:
+                # Reuse the existing cursor and connection to get a complete
+                # product label (engine + version + real edition/distribution).
+                database_version=adapter.get_version_info(conn,cursor)
+                if adapter.OS_NAME!='Oracle':
+                    counts['queries']+=1
+            except Exception as version_exc:
+                # Version inventory is optional; never break monitoring if
+                # metadata lookup is unavailable.
+                log(runlog,'WARNING',f'Unable to retrieve DB version: {mask_error(version_exc,cfg)}')
+
             modules.append(xml_module(prefix+f'{adapter.OS_NAME}:Connection',1,'generic_proc',group=group))
             modules.append(xml_module(prefix+f'{adapter.OS_NAME}:CollectorSessions',1,'generic_data','session',group))
             catalog=json.loads((Path(__file__).parent/'queries_builtin.json').read_text(encoding='utf-8'))
@@ -239,11 +306,14 @@ def execute(engine_name):
                 mod_name=item.get('name','').strip()
                 sql=item.get('sql','').strip()
                 if not mod_name or not sql:
-                    counts['error']+=1;continue
+                    counts['error']+=1
+                    errors.append('Query definition invalid: module name or SQL is empty')
+                    continue
                 allow_show=bool(item.get('builtin',False) and adapter.OS_NAME in ('MySQL',) )
                 if not sql_is_safe_readonly(sql,allow_show):
                     counts['error']+=1
                     log(runlog,'WARNING',f'Rejected non-read-only or multi-statement SQL for {mod_name}')
+                    errors.append(f'[{mod_name}] Rejected: SQL must contain exactly one read-only SELECT/WITH statement.')
                     continue
                 try:
                     adapter.before_query(conn,cursor,cfg)
@@ -255,7 +325,9 @@ def execute(engine_name):
                     counts['success']+=1
                 except Exception as e:
                     counts['error']+=1
-                    log(runlog,'WARNING',f'Query failed [{mod_name}]: {mask_error(e,cfg)}')
+                    detail=mask_error(e,cfg)
+                    errors.append(f'[{mod_name}] {detail}')
+                    log(runlog,'WARNING',f'Query failed [{mod_name}]: {detail}')
                     try:adapter.on_query_error(conn,cursor,cfg)
                     except Exception:pass
             modules.append(xml_module(prefix+f'{adapter.OS_NAME}:CollectorQueries',counts['queries'],'generic_data','queries',group))
@@ -266,17 +338,19 @@ def execute(engine_name):
             except Exception:pass
     except Exception as e:
         counts['error']+=1
+        fatal_error=True
         msg=mask_error(e,cfg)
+        errors.append(msg)
         log(runlog,'ERROR',f'Connection/collector failed agent={agent}: {msg}')
+        # Connection availability is a legitimate metric, not an error-log module.
         modules.append(xml_module(prefix+f'{adapter.OS_NAME}:Connection',0,'generic_proc',group=group))
-        modules.append(xml_module(prefix+f'{adapter.OS_NAME}:ConnectionError',msg,'generic_data_string',group=group))
         modules.append(xml_module(prefix+f'{adapter.OS_NAME}:CollectorSessions',counts['connections'],'generic_data','session',group))
     finally:
         if conn:
             try:conn.close()
             except Exception:pass
         if lock:lock.close()
-    body=xml_agent(adapter,cfg,agent,modules)
+    body=xml_agent(adapter,cfg,agent,modules,database_version)
     if args.stdout:
         print(body)
         output='stdout'
@@ -288,5 +362,31 @@ def execute(engine_name):
         os.replace(tmp,dest)
         output=str(dest)
     log(runlog,'INFO',f'Finish agent={agent} OK={counts["success"]} err={counts["error"]} sessions={counts["connections"]} file={output}')
-    print(json.dumps({'summary':{'Agent':agent,'DB':adapter.OS_NAME,'Modules OK':counts['success'],'Errors':counts['error'],'Queries executed':counts['queries'],'Sessions opened':counts['connections'],'Output':output},'info':'One DB session per execution maximum; custom SQL multiline via tempfile.'},ensure_ascii=False))
-    return 0
+    status='FAILED' if fatal_error else ('PARTIAL' if counts['error'] else 'OK')
+    summary={
+        'Status':status,
+        'Agent':agent,
+        'DB':adapter.OS_NAME,
+        'Database version':database_version or 'Unavailable',
+        'Target':f'{host}:{cfg.get("port") or {"MySQL":"3306","MSSQL":"1433","Oracle":"1521"}.get(adapter.OS_NAME,"")}/{target}',
+        'Modules OK':counts['success'],
+        'Errors':counts['error'],
+        'Queries executed':counts['queries'],
+        'Sessions opened':counts['connections'],
+        'Output':output,
+    }
+    # Pandora displays summary entries as key/value rows. Keep error details
+    # out of Pandora monitoring modules and put them in the task result here.
+    for i, detail in enumerate(errors[:5],start=1):
+        summary[f'Error {i}']=detail[:450]
+    if len(errors)>5:
+        summary['Additional errors']=f'{len(errors)-5} more; inspect server log'
+    if fatal_error:
+        summary['Suggested action']=error_advice(errors[0],cfg,adapter.OS_NAME)
+    elif errors:
+        summary['Suggested action']='Review failed SQL modules (SELECT-only and correct privileges); successful modules were still collected.'
+    info='Database session closed after task execution. Detailed errors are shown in this summary, not as modules.'
+    print(json.dumps({'summary':summary,'info':info},ensure_ascii=False))
+    # Official Pandora Discovery convention: nonzero exit status = task failed.
+    # A single bad query is partial; other module data remains usable.
+    return 1 if fatal_error else 0
